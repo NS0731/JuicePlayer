@@ -282,7 +282,7 @@ function renderResults(songs, append = false) {
 
     const playBtn = document.createElement("button");
     playBtn.type = "button";
-    playBtn.textContent = "Play";
+    playBtn.textContent = "▶ Play";
     playBtn.disabled = blocked || !getSongFilePath(song);
     playBtn.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -363,11 +363,11 @@ function updateNowPlaying(song) {
 
 function updatePlayPauseButton() {
   if (player.paused) {
-    playPauseBtn.innerHTML = "&#9654;";
+    playPauseBtn.textContent = "▶";
     playPauseBtn.setAttribute("aria-label", "Play");
     playPauseBtn.setAttribute("title", "Play");
   } else {
-    playPauseBtn.innerHTML = "&#10074;&#10074;";
+    playPauseBtn.textContent = "⏸";
     playPauseBtn.setAttribute("aria-label", "Pause");
     playPauseBtn.setAttribute("title", "Pause");
   }
