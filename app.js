@@ -19,6 +19,7 @@ const prevBtn = document.getElementById("prevBtn");
 const playPauseBtn = document.getElementById("playPauseBtn");
 const nextBtn = document.getElementById("nextBtn");
 const radioBtn = document.getElementById("radioBtn");
+const clearQueueBtn = document.getElementById("clearQueueBtn");
 const player = document.getElementById("player");
 
 const PAGE_SIZE = 20;
@@ -279,6 +280,22 @@ function renderResults(songs, append = false) {
     const actions = document.createElement("div");
     actions.className = "item-actions";
 
+    const playBtn = document.createElement("button");
+    playBtn.type = "button";
+    playBtn.textContent = "Play";
+    playBtn.disabled = blocked || !getSongFilePath(song);
+    playBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+
+      if (blocked) {
+        setStatus("This category is visible but not playable.");
+        return;
+      }
+
+      addToQueue(song);
+      setStatus("Added to queue.");
+    });
+
     const downloadBtn = document.createElement("button");
     downloadBtn.type = "button";
     downloadBtn.textContent = "Download";
@@ -288,6 +305,7 @@ function renderResults(songs, append = false) {
       downloadSong(song);
     });
 
+    actions.appendChild(playBtn);
     actions.appendChild(downloadBtn);
     header.appendChild(title);
     header.appendChild(actions);
@@ -344,7 +362,15 @@ function updateNowPlaying(song) {
 }
 
 function updatePlayPauseButton() {
-  playPauseBtn.textContent = player.paused ? "Play" : "Pause";
+  if (player.paused) {
+    playPauseBtn.innerHTML = "&#9654;";
+    playPauseBtn.setAttribute("aria-label", "Play");
+    playPauseBtn.setAttribute("title", "Play");
+  } else {
+    playPauseBtn.innerHTML = "&#10074;&#10074;";
+    playPauseBtn.setAttribute("aria-label", "Pause");
+    playPauseBtn.setAttribute("title", "Pause");
+  }
 }
 
 function formatTime(totalSeconds) {
@@ -386,6 +412,21 @@ function addToQueue(song) {
   if (currentIndex === -1) {
     playQueueIndex(0);
   }
+}
+
+function clearQueue() {
+  queue = [];
+  currentIndex = -1;
+
+  player.pause();
+  player.removeAttribute("src");
+  player.load();
+
+  renderQueue();
+  updateNowPlaying(null);
+  resetProgressDisplay();
+  updatePlayPauseButton();
+  setStatus("Queue cleared.");
 }
 
 async function playQueueIndex(index) {
@@ -566,10 +607,27 @@ searchInput.addEventListener("keydown", (event) => {
 
 prevBtn.addEventListener("click", playPrevious);
 nextBtn.addEventListener("click", playNext);
-radioBtn.addEventListener("click", () => {
+clearQueueBtn.addEventListener("click", clearQueue);
+radioBtn.addEventListener("click", async () => {
   isRadioMode = !isRadioMode;
   updateRadioButton();
   setStatus(isRadioMode ? "Radio mode enabled." : "Radio mode disabled.");
+
+  if (!isRadioMode) {
+    return;
+  }
+
+  const hasActiveTrack = currentIndex >= 0 && Boolean(player.src);
+  if (hasActiveTrack) {
+    return;
+  }
+
+  if (queue.length > 0) {
+    await playQueueIndex(0);
+    return;
+  }
+
+  await continueWithRadio();
 });
 
 playPauseBtn.addEventListener("click", async () => {

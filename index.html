@@ -26,15 +26,20 @@
 
     <section class="panel">
       <h2>Queue</h2>
+      <div class="search-row">
+        <button id="clearQueueBtn" type="button">Clear Queue</button>
+      </div>
       <div id="queue" class="list"></div>
     </section>
   </div>
 
   <div class="player-bar">
     <div class="controls">
-      <button id="prevBtn" type="button">Previous</button>
-      <button id="playPauseBtn" type="button">Play</button>
-      <button id="nextBtn" type="button">Next</button>
+      <div class="transport-controls">
+        <button id="prevBtn" type="button" aria-label="Previous" title="Previous">&#9664;&#9664;</button>
+        <button id="playPauseBtn" type="button" aria-label="Play" title="Play"></button>
+        <button id="nextBtn" type="button" aria-label="Next" title="Next">&#9654;&#9654;</button>
+      </div>
       <button id="radioBtn" type="button">Radio Off</button>
     </div>
     <div class="progress-wrap">

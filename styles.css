@@ -168,6 +168,11 @@ button {
   gap: 8px;
 }
 
+.transport-controls {
+  display: flex;
+  gap: 8px;
+}
+
 .controls button.active {
   border-color: #4c7de3;
   background: #1f2a43;
@@ -207,4 +212,97 @@ button {
 
 #player {
   display: none;
+}
+
+@media (max-width: 900px) {
+  body {
+    height: auto;
+    min-height: 100vh;
+    overflow: auto;
+  }
+
+  .layout {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+    padding-bottom: 190px;
+  }
+
+  .panel {
+    border-right: none;
+    border-bottom: 1px solid #262626;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .panel:last-child {
+    border-bottom: none;
+  }
+
+  .player-bar {
+    height: auto;
+    min-height: 150px;
+    padding: 10px 12px;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .controls,
+  .progress-wrap,
+  #nowPlaying {
+    width: 100%;
+    max-width: none;
+  }
+
+  #nowPlaying {
+    text-align: left;
+  }
+}
+
+@media (max-width: 560px) {
+  .panel {
+    padding: 12px;
+  }
+
+  .search-row {
+    flex-wrap: wrap;
+  }
+
+  .search-row input,
+  .search-row button,
+  #loadMoreBtn {
+    width: 100%;
+  }
+
+  .controls {
+    flex-wrap: wrap;
+  }
+
+  .transport-controls {
+    width: 100%;
+    flex-wrap: nowrap;
+  }
+
+  .transport-controls button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  #radioBtn {
+    width: 100%;
+  }
+
+  .item-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .item-actions {
+    width: 100%;
+  }
+
+  .item-actions button {
+    width: 100%;
+  }
 }
