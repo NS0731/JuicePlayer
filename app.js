@@ -455,55 +455,46 @@ function renderResults(songs, append = false) {
     title.className = "item-title";
     title.textContent = songDisplayName(song);
 
-    const actions = document.createElement("div");
-    actions.className = "item-actions";
-
-    const playBtn = document.createElement("button");
-    playBtn.type = "button";
-    playBtn.textContent = "▶ Play";
-    playBtn.disabled = blocked || !getSongFilePath(song);
-    playBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-
-      if (blocked) {
-        setStatus("This category is visible but not playable.");
-        return;
-      }
-
-      addToQueueAndPlayNow(song);
-      setStatus("Added to queue and playing now.");
-    });
-
-    const addQueueBtn = document.createElement("button");
-    addQueueBtn.type = "button";
-    addQueueBtn.textContent = "+ Queue";
-    addQueueBtn.disabled = blocked || !getSongFilePath(song);
-    addQueueBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-
-      if (blocked) {
-        setStatus("This category is visible but not playable.");
-        return;
-      }
-
-      addToQueueOnly(song);
-      setStatus("Added to queue.");
-    });
-
-    const downloadBtn = document.createElement("button");
-    downloadBtn.type = "button";
-    downloadBtn.textContent = "Download";
-    downloadBtn.disabled = blocked || !getSongFilePath(song);
-    downloadBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      downloadSong(song);
-    });
-
-    actions.appendChild(playBtn);
-    actions.appendChild(addQueueBtn);
-    actions.appendChild(downloadBtn);
     header.appendChild(title);
-    header.appendChild(actions);
+
+    if (!blocked) {
+      const actions = document.createElement("div");
+      actions.className = "item-actions";
+
+      const playBtn = document.createElement("button");
+      playBtn.type = "button";
+      playBtn.textContent = "▶ Play";
+      playBtn.disabled = !getSongFilePath(song);
+      playBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        addToQueueAndPlayNow(song);
+        setStatus("Added to queue and playing now.");
+      });
+
+      const addQueueBtn = document.createElement("button");
+      addQueueBtn.type = "button";
+      addQueueBtn.textContent = "+ Queue";
+      addQueueBtn.disabled = !getSongFilePath(song);
+      addQueueBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        addToQueueOnly(song);
+        setStatus("Added to queue.");
+      });
+
+      const downloadBtn = document.createElement("button");
+      downloadBtn.type = "button";
+      downloadBtn.textContent = "Download";
+      downloadBtn.disabled = !getSongFilePath(song);
+      downloadBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        downloadSong(song);
+      });
+
+      actions.appendChild(playBtn);
+      actions.appendChild(addQueueBtn);
+      actions.appendChild(downloadBtn);
+      header.appendChild(actions);
+    }
 
     const meta = document.createElement("div");
     meta.className = "meta";
