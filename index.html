@@ -8,8 +8,12 @@
 </head>
 <body>
   <div class="layout">
-    <section class="panel">
-      <h2>Search</h2>
+    <section class="panel" id="searchPanel">
+      <div class="panel-header">
+        <h2>Search</h2>
+        <button id="searchPanelToggle" class="panel-toggle" type="button" aria-expanded="true">Hide</button>
+      </div>
+      <div class="panel-content">
       <div class="search-row">
         <input id="searchInput" type="text" placeholder="Search songs" />
       </div>
@@ -22,14 +26,20 @@
       <div id="status"></div>
       <div id="results" class="list"></div>
       <button id="loadMoreBtn" type="button">Load More</button>
+      </div>
     </section>
 
-    <section class="panel">
-      <h2>Queue</h2>
+    <section class="panel" id="queuePanel">
+      <div class="panel-header">
+        <h2>Queue</h2>
+        <button id="queuePanelToggle" class="panel-toggle" type="button" aria-expanded="true">Hide</button>
+      </div>
+      <div class="panel-content">
       <div class="search-row">
         <button id="clearQueueBtn" type="button">Clear Queue</button>
       </div>
       <div id="queue" class="list"></div>
+      </div>
     </section>
   </div>
 

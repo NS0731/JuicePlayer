@@ -36,6 +36,24 @@ h2 {
   font-size: 20px;
 }
 
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.panel-header h2 {
+  margin: 0;
+}
+
+.panel-toggle {
+  display: none;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 .search-row {
   display: flex;
   gap: 8px;
@@ -84,12 +102,29 @@ button {
   width: 100%;
 }
 
-#status,
 #loading,
 #empty {
   margin: 8px 0;
   font-size: 13px;
   color: #c8c8c8;
+}
+
+#status {
+  position: fixed;
+  left: 50%;
+  bottom: 126px;
+  transform: translateX(-50%);
+  background: rgba(20, 20, 20, 0.94);
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #f0f0f0;
+  z-index: 20;
+  display: none;
+  pointer-events: none;
+  max-width: min(90vw, 520px);
+  text-align: center;
 }
 
 #loading,
@@ -239,6 +274,18 @@ button {
     border-bottom: none;
   }
 
+  .panel-toggle {
+    display: inline-block;
+  }
+
+  .panel.collapsed .panel-content {
+    display: none;
+  }
+
+  .panel.collapsed {
+    overflow: hidden;
+  }
+
   .player-bar {
     height: auto;
     min-height: 150px;
@@ -257,6 +304,10 @@ button {
 
   #nowPlaying {
     text-align: left;
+  }
+
+  #status {
+    bottom: 168px;
   }
 }
 

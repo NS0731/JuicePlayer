@@ -14,6 +14,10 @@ const nowPlayingEl = document.getElementById("nowPlaying");
 const progressBar = document.getElementById("progressBar");
 const currentTimeEl = document.getElementById("currentTime");
 const durationEl = document.getElementById("duration");
+const searchPanel = document.getElementById("searchPanel");
+const queuePanel = document.getElementById("queuePanel");
+const searchPanelToggle = document.getElementById("searchPanelToggle");
+const queuePanelToggle = document.getElementById("queuePanelToggle");
 
 const prevBtn = document.getElementById("prevBtn");
 const playPauseBtn = document.getElementById("playPauseBtn");
@@ -23,6 +27,7 @@ const clearQueueBtn = document.getElementById("clearQueueBtn");
 const player = document.getElementById("player");
 
 const PAGE_SIZE = 20;
+const RADIO_PREFETCH_REMAINING_SECONDS = 20;
 
 let queue = [];
 let currentIndex = -1;
@@ -31,6 +36,10 @@ let currentPage = 1;
 let hasMoreResults = false;
 let isRadioMode = false;
 let isFetchingRadioSong = false;
+let isPrefetchingRadioSong = false;
+let prefetchedRadioSong = null;
+let radioPreloadAudio = null;
+let statusHideTimer = null;
 
 function setLoading(isLoading) {
   loadingEl.style.display = isLoading ? "block" : "none";
@@ -41,7 +50,57 @@ function setEmpty(show) {
 }
 
 function setStatus(message) {
-  statusEl.textContent = message || "";
+  const text = (message || "").trim();
+
+  if (statusHideTimer) {
+    clearTimeout(statusHideTimer);
+    statusHideTimer = null;
+  }
+
+  statusEl.textContent = text;
+  statusEl.style.display = text ? "block" : "none";
+
+  if (text) {
+    statusHideTimer = setTimeout(() => {
+      statusEl.textContent = "";
+      statusEl.style.display = "none";
+      statusHideTimer = null;
+    }, 2400);
+  }
+}
+
+function setPanelCollapsed(panel, toggleBtn, collapsed) {
+  panel.classList.toggle("collapsed", collapsed);
+  toggleBtn.textContent = collapsed ? "Show" : "Hide";
+  toggleBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+}
+
+function initializeMobilePanelToggles() {
+  const mobileQuery = window.matchMedia("(max-width: 900px)");
+
+  searchPanelToggle.addEventListener("click", () => {
+    const collapsed = !searchPanel.classList.contains("collapsed");
+    setPanelCollapsed(searchPanel, searchPanelToggle, collapsed);
+  });
+
+  queuePanelToggle.addEventListener("click", () => {
+    const collapsed = !queuePanel.classList.contains("collapsed");
+    setPanelCollapsed(queuePanel, queuePanelToggle, collapsed);
+  });
+
+  const syncForViewport = () => {
+    if (mobileQuery.matches) {
+      setPanelCollapsed(searchPanel, searchPanelToggle, false);
+      setPanelCollapsed(queuePanel, queuePanelToggle, true);
+      return;
+    }
+
+    setPanelCollapsed(searchPanel, searchPanelToggle, false);
+    setPanelCollapsed(queuePanel, queuePanelToggle, false);
+  };
+
+  syncForViewport();
+  mobileQuery.addEventListener("change", syncForViewport);
 }
 
 function updateRadioButton() {
@@ -145,6 +204,52 @@ function songArtist(song) {
   return song?.credited_artists || "Unknown Artist";
 }
 
+function songCategory(song) {
+  return song?.category || "unknown";
+}
+
+function updateMediaSession(song) {
+  if (!("mediaSession" in navigator)) {
+    return;
+  }
+
+  if (!song) {
+    navigator.mediaSession.metadata = null;
+    return;
+  }
+
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: songDisplayName(song),
+    artist: songArtist(song),
+    album: songCategory(song)
+  });
+
+  navigator.mediaSession.setActionHandler("play", async () => {
+    try {
+      if (!player.src && queue.length > 0 && currentIndex === -1) {
+        await playQueueIndex(0);
+        return;
+      }
+
+      await player.play();
+    } catch (error) {
+      console.error("Media session play error", error);
+    }
+  });
+
+  navigator.mediaSession.setActionHandler("pause", () => {
+    player.pause();
+  });
+
+  navigator.mediaSession.setActionHandler("previoustrack", () => {
+    playPrevious();
+  });
+
+  navigator.mediaSession.setActionHandler("nexttrack", () => {
+    playNext();
+  });
+}
+
 function getSongIdentity(song) {
   const path = getSongFilePath(song);
   if (path) {
@@ -241,7 +346,17 @@ async function continueWithRadio() {
   setStatus("Radio mode is finding the next song...");
 
   try {
-    const song = await fetchRadioSong();
+    let song = null;
+
+    if (prefetchedRadioSong && !queueContainsSong(prefetchedRadioSong)) {
+      song = prefetchedRadioSong;
+    } else {
+      song = await fetchRadioSong();
+    }
+
+    prefetchedRadioSong = null;
+    radioPreloadAudio = null;
+
     if (!song) {
       setStatus("Radio mode could not find a playable song.");
       return;
@@ -252,6 +367,69 @@ async function continueWithRadio() {
     await playQueueIndex(queue.length - 1);
   } finally {
     isFetchingRadioSong = false;
+  }
+}
+
+function shouldPrefetchRadioSong(force = false) {
+  if (!isRadioMode || isFetchingRadioSong || isPrefetchingRadioSong) {
+    return false;
+  }
+
+  if (currentIndex < 0 || queue.length === 0) {
+    return false;
+  }
+
+  if (currentIndex !== queue.length - 1) {
+    return false;
+  }
+
+  if (force) {
+    return true;
+  }
+
+  const duration = Number.isFinite(player.duration) ? player.duration : 0;
+  const currentTime = Number.isFinite(player.currentTime) ? player.currentTime : 0;
+  if (duration <= 0) {
+    return false;
+  }
+
+  const remaining = duration - currentTime;
+  return remaining <= RADIO_PREFETCH_REMAINING_SECONDS;
+}
+
+function preloadRadioAudio(song) {
+  const streamUrl = songStreamUrl(song);
+  if (!streamUrl) {
+    return;
+  }
+
+  radioPreloadAudio = new Audio();
+  radioPreloadAudio.preload = "auto";
+  radioPreloadAudio.src = streamUrl;
+  radioPreloadAudio.load();
+}
+
+async function prefetchNextRadioSongIfNeeded(force = false) {
+  if (!shouldPrefetchRadioSong(force)) {
+    return;
+  }
+
+  if (prefetchedRadioSong && !queueContainsSong(prefetchedRadioSong)) {
+    return;
+  }
+
+  isPrefetchingRadioSong = true;
+
+  try {
+    const song = await fetchRadioSong();
+    if (!song) {
+      return;
+    }
+
+    prefetchedRadioSong = song;
+    preloadRadioAudio(song);
+  } finally {
+    isPrefetchingRadioSong = false;
   }
 }
 
@@ -292,7 +470,23 @@ function renderResults(songs, append = false) {
         return;
       }
 
-      addToQueue(song);
+      addToQueueAndPlayNow(song);
+      setStatus("Added to queue and playing now.");
+    });
+
+    const addQueueBtn = document.createElement("button");
+    addQueueBtn.type = "button";
+    addQueueBtn.textContent = "+ Queue";
+    addQueueBtn.disabled = blocked || !getSongFilePath(song);
+    addQueueBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+
+      if (blocked) {
+        setStatus("This category is visible but not playable.");
+        return;
+      }
+
+      addToQueueOnly(song);
       setStatus("Added to queue.");
     });
 
@@ -306,6 +500,7 @@ function renderResults(songs, append = false) {
     });
 
     actions.appendChild(playBtn);
+    actions.appendChild(addQueueBtn);
     actions.appendChild(downloadBtn);
     header.appendChild(title);
     header.appendChild(actions);
@@ -358,7 +553,19 @@ function renderQueue() {
 }
 
 function updateNowPlaying(song) {
-  nowPlayingEl.textContent = song ? `Now Playing: ${songDisplayName(song)}` : "Now Playing: Nothing";
+  if (!song) {
+    nowPlayingEl.textContent = "Now Playing: Nothing";
+    document.title = "JuicePlayer";
+    updateMediaSession(null);
+    return;
+  }
+
+  const title = songDisplayName(song);
+  const artist = songArtist(song);
+  const category = songCategory(song);
+  nowPlayingEl.textContent = `Now Playing: ${title} - ${artist} (${category})`;
+  document.title = `${title} - ${artist} | JuicePlayer`;
+  updateMediaSession(song);
 }
 
 function updatePlayPauseButton() {
@@ -399,6 +606,11 @@ function updateProgressDisplay() {
   }
 }
 
+function handlePlayerTimeUpdate() {
+  updateProgressDisplay();
+  prefetchNextRadioSongIfNeeded();
+}
+
 function resetProgressDisplay() {
   progressBar.value = "0";
   currentTimeEl.textContent = "0:00";
@@ -414,9 +626,23 @@ function addToQueue(song) {
   }
 }
 
+function addToQueueOnly(song) {
+  queue.push(song);
+  renderQueue();
+}
+
+function addToQueueAndPlayNow(song) {
+  queue.push(song);
+  const newIndex = queue.length - 1;
+  renderQueue();
+  playQueueIndex(newIndex);
+}
+
 function clearQueue() {
   queue = [];
   currentIndex = -1;
+  prefetchedRadioSong = null;
+  radioPreloadAudio = null;
 
   player.pause();
   player.removeAttribute("src");
@@ -467,6 +693,7 @@ async function playQueueIndex(index) {
 async function playNext() {
   if (currentIndex + 1 < queue.length) {
     await playQueueIndex(currentIndex + 1);
+    prefetchNextRadioSongIfNeeded(true);
     return;
   }
 
@@ -614,6 +841,8 @@ radioBtn.addEventListener("click", async () => {
   setStatus(isRadioMode ? "Radio mode enabled." : "Radio mode disabled.");
 
   if (!isRadioMode) {
+    prefetchedRadioSong = null;
+    radioPreloadAudio = null;
     return;
   }
 
@@ -652,7 +881,7 @@ playPauseBtn.addEventListener("click", async () => {
 
 player.addEventListener("play", updatePlayPauseButton);
 player.addEventListener("pause", updatePlayPauseButton);
-player.addEventListener("timeupdate", updateProgressDisplay);
+player.addEventListener("timeupdate", handlePlayerTimeUpdate);
 player.addEventListener("loadedmetadata", updateProgressDisplay);
 player.addEventListener("durationchange", updateProgressDisplay);
 player.addEventListener("ended", () => {
@@ -675,4 +904,7 @@ updateNowPlaying(null);
 updatePlayPauseButton();
 updateRadioButton();
 resetProgressDisplay();
-loadCategories();
+initializeMobilePanelToggles();
+loadCategories().finally(() => {
+  searchSongs();
+});
