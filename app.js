@@ -1,4 +1,5 @@
 const API_BASE = "/api/juicewrld";
+const LASTFM_API_BASE = "/auth/lastfm";
 const BLOCKED_CATEGORIES = new Set(["unsurfaced", "recording_session"]);
 
 const searchInput = document.getElementById("searchInput");
@@ -18,6 +19,10 @@ const searchPanel = document.getElementById("searchPanel");
 const queuePanel = document.getElementById("queuePanel");
 const searchPanelToggle = document.getElementById("searchPanelToggle");
 const queuePanelToggle = document.getElementById("queuePanelToggle");
+const lastFmHint = document.getElementById("lastFmHint");
+const lastFmAuthMessage = document.getElementById("lastFmAuthMessage");
+const lastFmLoginBtn = document.getElementById("lastFmLoginBtn");
+const lastFmLogoutBtn = document.getElementById("lastFmLogoutBtn");
 
 const prevBtn = document.getElementById("prevBtn");
 const playPauseBtn = document.getElementById("playPauseBtn");
@@ -40,6 +45,387 @@ let isPrefetchingRadioSong = false;
 let prefetchedRadioSong = null;
 let radioPreloadAudio = null;
 let statusHideTimer = null;
+let lastFmState = {
+  enabled: false,
+  authenticated: false,
+  username: null
+};
+let currentTrackScrobbleState = null;
+let lastFmOutcomeMessage = "";
+let lastFmOutcomeType = "";
+let lastFmAuthPollTimer = null;
+let lastFmAuthPollAttempts = 0;
+let lastFmStatusError = "";
+let isLastFmAuthPending = false;
+let currentLastFmFlowId = "";
+let lastFmStatusLoaded = false;
+
+function setLastFmOutcomeMessage(message, type = "") {
+  lastFmOutcomeMessage = String(message || "");
+  lastFmOutcomeType = type;
+  if (!lastFmAuthMessage) {
+    return;
+  }
+
+  lastFmAuthMessage.textContent = lastFmOutcomeMessage;
+  lastFmAuthMessage.classList.toggle("success", type === "success");
+  lastFmAuthMessage.classList.toggle("error", type === "error");
+}
+
+function stopLastFmAuthPolling() {
+  if (lastFmAuthPollTimer) {
+    clearInterval(lastFmAuthPollTimer);
+    lastFmAuthPollTimer = null;
+  }
+
+  lastFmAuthPollAttempts = 0;
+}
+
+async function finalizeLastFmPopupLogin(authCode) {
+  if (!authCode) {
+    return false;
+  }
+
+  try {
+    await postLastFm("/complete", { code: authCode });
+    return true;
+  } catch (error) {
+    console.error("Last.fm finalize login error", error);
+    return false;
+  }
+}
+
+async function initializeLastFmLogin() {
+  const response = await fetch(`${LASTFM_API_BASE}/login-init?t=${Date.now()}`, {
+    cache: "no-store",
+    credentials: "same-origin"
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(body || `Last.fm login-init failed with status ${response.status}`);
+  }
+
+  return response.json();
+}
+
+async function fetchLastFmFlowStatus(flowId) {
+  try {
+    const query = flowId ? `flow_id=${encodeURIComponent(flowId)}&` : "";
+    const response = await fetch(`${LASTFM_API_BASE}/flow-status?${query}t=${Date.now()}`, {
+      cache: "no-store",
+      credentials: "same-origin"
+    });
+
+    if (!response.ok) {
+      return { status: "pending" };
+    }
+
+    return await response.json();
+  } catch (error) {
+    return { status: "pending" };
+  }
+}
+
+function startLastFmAuthPolling() {
+  stopLastFmAuthPolling();
+  isLastFmAuthPending = true;
+
+  lastFmAuthPollTimer = setInterval(async () => {
+    lastFmAuthPollAttempts += 1;
+
+    if (currentLastFmFlowId) {
+      const flowStatus = await fetchLastFmFlowStatus(currentLastFmFlowId);
+      const fallbackFlowStatus = flowStatus?.status === "pending"
+        ? await fetchLastFmFlowStatus("")
+        : flowStatus;
+      const effectiveFlowStatus = fallbackFlowStatus || flowStatus;
+
+      if (effectiveFlowStatus?.status === "connected") {
+        await refreshLastFmState();
+        if (lastFmState.authenticated) {
+          stopLastFmAuthPolling();
+          isLastFmAuthPending = false;
+          currentLastFmFlowId = "";
+          setStatus("Last.fm connected. Scrobbling is now active.");
+          setLastFmOutcomeMessage("Connection successful. Scrobbling is active.", "success");
+          return;
+        }
+      }
+
+      if (effectiveFlowStatus?.status === "failed") {
+        stopLastFmAuthPolling();
+        isLastFmAuthPending = false;
+        currentLastFmFlowId = "";
+        const reason = effectiveFlowStatus?.error ? String(effectiveFlowStatus.error) : "Unknown error";
+        setLastFmOutcomeMessage(`Login failed: ${reason}`, "error");
+        return;
+      }
+
+      if (effectiveFlowStatus?.status === "missing_token") {
+        stopLastFmAuthPolling();
+        isLastFmAuthPending = false;
+        currentLastFmFlowId = "";
+        setLastFmOutcomeMessage("Last.fm did not return a token to the callback URL.", "error");
+        return;
+      }
+    }
+
+    const refreshed = await refreshLastFmState();
+
+    if (!refreshed) {
+      if (lastFmAuthPollAttempts >= 8) {
+        stopLastFmAuthPolling();
+        isLastFmAuthPending = false;
+        setLastFmOutcomeMessage("Unable to reach auth status endpoint. Make sure the server is running, then try again.", "error");
+      }
+      return;
+    }
+
+    if (lastFmState.authenticated) {
+      stopLastFmAuthPolling();
+      isLastFmAuthPending = false;
+      return;
+    }
+
+    if (lastFmAuthPollAttempts >= 30) {
+      stopLastFmAuthPolling();
+      isLastFmAuthPending = false;
+      setLastFmOutcomeMessage("Authorization did not complete in time. If you approved Last.fm, click Connect again.", "error");
+    }
+  }, 2000);
+}
+
+async function handleLastFmAuthMessage(event) {
+  if (event.origin !== window.location.origin) {
+    return;
+  }
+
+  const data = event.data;
+  if (!data || data.source !== "lastfm-auth") {
+    return;
+  }
+
+  stopLastFmAuthPolling();
+  isLastFmAuthPending = false;
+
+  if (data.status === "connected") {
+    if (data.authCode) {
+      await finalizeLastFmPopupLogin(String(data.authCode));
+    }
+
+    await refreshLastFmState();
+    if (lastFmState.authenticated) {
+      currentLastFmFlowId = "";
+      setStatus("Last.fm connected. Scrobbling is now active.");
+      setLastFmOutcomeMessage("Connection successful. Scrobbling is active.", "success");
+      return;
+    }
+
+    setStatus("Last.fm login did not finalize.");
+    setLastFmOutcomeMessage("Authorization finished but session was not finalized. Click Connect once more.", "error");
+    return;
+  }
+
+  if (data.status === "missing_token") {
+    currentLastFmFlowId = "";
+    setStatus("Last.fm login did not return a token.");
+    setLastFmOutcomeMessage("Last.fm did not return a token to the callback URL.", "error");
+    return;
+  }
+
+  currentLastFmFlowId = "";
+  const reason = data.error ? String(data.error) : "Unknown error";
+  setStatus("Last.fm login failed.");
+  setLastFmOutcomeMessage(`Login failed: ${reason}`, "error");
+}
+
+function currentUnixTime() {
+  return Math.floor(Date.now() / 1000);
+}
+
+function buildTrackScrobbleState(song, index) {
+  return {
+    song,
+    index,
+    identity: getSongIdentity(song),
+    startedAt: currentUnixTime(),
+    nowPlayingSent: false,
+    scrobbled: false
+  };
+}
+
+function updateLastFmUi() {
+  const { enabled, authenticated, username } = lastFmState;
+
+  if (!lastFmStatusLoaded) {
+    lastFmHint.textContent = "Checking Last.fm configuration...";
+    lastFmLoginBtn.disabled = true;
+    lastFmLogoutBtn.disabled = true;
+    lastFmLoginBtn.style.display = "inline-block";
+    lastFmLogoutBtn.style.display = "none";
+    if (!lastFmOutcomeMessage) {
+      setLastFmOutcomeMessage("Checking Last.fm status...");
+    }
+    return;
+  }
+
+  if (lastFmStatusError) {
+    lastFmHint.textContent = "Could not reach Last.fm status from this page.";
+    lastFmLoginBtn.disabled = false;
+    lastFmLogoutBtn.disabled = false;
+    lastFmLoginBtn.style.display = "inline-block";
+    lastFmLogoutBtn.style.display = "none";
+    setLastFmOutcomeMessage("Status request failed. Restart the server and refresh this page.", "error");
+    return;
+  }
+
+  if (!enabled) {
+    lastFmHint.textContent = "Last.fm is not configured on this server. You can still use JuicePlayer normally.";
+    lastFmLoginBtn.disabled = true;
+    lastFmLogoutBtn.disabled = true;
+    if (!lastFmOutcomeMessage) {
+      setLastFmOutcomeMessage("Last.fm auth is disabled because server keys are missing.", "error");
+    }
+    return;
+  }
+
+  if (authenticated) {
+    lastFmHint.textContent = `Scrobbling is active${username ? ` for ${username}` : ""}.`;
+    lastFmLoginBtn.style.display = "none";
+    lastFmLogoutBtn.style.display = "inline-block";
+    lastFmLoginBtn.disabled = false;
+    lastFmLogoutBtn.disabled = false;
+    lastFmLogoutBtn.textContent = username ? `Disconnect: ${username}` : "Disconnect";
+    setLastFmOutcomeMessage("Connected successfully.", "success");
+    return;
+  }
+
+  lastFmHint.textContent = "Sign in to optionally track what you listen to. You can still use the app without login.";
+  lastFmLoginBtn.style.display = "inline-block";
+  lastFmLogoutBtn.style.display = "none";
+  lastFmLoginBtn.disabled = false;
+  lastFmLogoutBtn.disabled = false;
+  lastFmLogoutBtn.textContent = "Disconnect";
+
+  if (!lastFmOutcomeMessage || (!isLastFmAuthPending && lastFmOutcomeType !== "error")) {
+    setLastFmOutcomeMessage("Not connected");
+  }
+}
+
+async function refreshLastFmState() {
+  try {
+    const response = await fetch(`${LASTFM_API_BASE}/status?t=${Date.now()}`, {
+      cache: "no-store",
+      credentials: "same-origin"
+    });
+    if (!response.ok) {
+      throw new Error(`Last.fm status request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    lastFmStatusLoaded = true;
+    lastFmStatusError = "";
+    lastFmState = {
+      enabled: Boolean(data?.enabled),
+      authenticated: Boolean(data?.authenticated),
+      username: data?.username || null
+    };
+
+    updateLastFmUi();
+    return true;
+  } catch (error) {
+    console.error("Last.fm status error", error);
+    lastFmStatusLoaded = true;
+    lastFmStatusError = String(error?.message || "status_request_failed");
+    lastFmState = {
+      enabled: false,
+      authenticated: false,
+      username: null
+    };
+    updateLastFmUi();
+    return false;
+  }
+}
+
+async function postLastFm(path, payload) {
+  const response = await fetch(`${LASTFM_API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    throw new Error(responseText || `Last.fm request failed with status ${response.status}`);
+  }
+}
+
+async function submitLastFmNowPlaying(trackState) {
+  if (!lastFmState.enabled || !lastFmState.authenticated || !trackState || trackState.nowPlayingSent) {
+    return;
+  }
+
+  const song = trackState.song;
+  const duration = Number.isFinite(player.duration) ? Math.floor(player.duration) : undefined;
+
+  try {
+    await postLastFm("/now-playing", {
+      artist: songArtist(song),
+      track: songDisplayName(song),
+      album: songCategory(song),
+      duration
+    });
+    trackState.nowPlayingSent = true;
+  } catch (error) {
+    console.error("Last.fm now playing error", error);
+  }
+}
+
+function scrobbleThresholdSeconds() {
+  const duration = Number.isFinite(player.duration) ? player.duration : 0;
+  if (duration <= 0) {
+    return 240;
+  }
+
+  return Math.min(duration / 2, 240);
+}
+
+async function maybeScrobbleCurrentTrack() {
+  const trackState = currentTrackScrobbleState;
+
+  if (!trackState || trackState.scrobbled || !lastFmState.enabled || !lastFmState.authenticated) {
+    return;
+  }
+
+  if (trackState.index !== currentIndex || trackState.identity !== getSongIdentity(trackState.song)) {
+    return;
+  }
+
+  const currentTime = Number.isFinite(player.currentTime) ? player.currentTime : 0;
+  const threshold = scrobbleThresholdSeconds();
+
+  if (currentTime < 30 || currentTime < threshold) {
+    return;
+  }
+
+  const duration = Number.isFinite(player.duration) ? Math.floor(player.duration) : undefined;
+
+  try {
+    await postLastFm("/scrobble", {
+      artist: songArtist(trackState.song),
+      track: songDisplayName(trackState.song),
+      album: songCategory(trackState.song),
+      duration,
+      timestamp: trackState.startedAt
+    });
+    trackState.scrobbled = true;
+  } catch (error) {
+    console.error("Last.fm scrobble error", error);
+  }
+}
 
 function setLoading(isLoading) {
   loadingEl.style.display = isLoading ? "block" : "none";
@@ -524,15 +910,35 @@ function renderQueue() {
     const item = document.createElement("div");
     item.className = `item${index === currentIndex ? " active" : ""}`;
 
+    const header = document.createElement("div");
+    header.className = "item-header";
+
     const title = document.createElement("div");
     title.className = "item-title";
     title.textContent = `${index === currentIndex ? "▶ " : ""}${songDisplayName(song)}`;
+
+    const actions = document.createElement("div");
+    actions.className = "item-actions";
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.textContent = "×";
+    removeBtn.setAttribute("aria-label", "Remove from queue");
+    removeBtn.setAttribute("title", "Remove from queue");
+    removeBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await removeQueueIndex(index);
+    });
+
+    actions.appendChild(removeBtn);
+    header.appendChild(title);
+    header.appendChild(actions);
 
     const meta = document.createElement("div");
     meta.className = "meta";
     meta.textContent = `${song?.category || "unknown"} • ${songArtist(song)}`;
 
-    item.appendChild(title);
+    item.appendChild(header);
     item.appendChild(meta);
 
     item.addEventListener("click", () => {
@@ -600,6 +1006,7 @@ function updateProgressDisplay() {
 function handlePlayerTimeUpdate() {
   updateProgressDisplay();
   prefetchNextRadioSongIfNeeded();
+  maybeScrobbleCurrentTrack();
 }
 
 function resetProgressDisplay() {
@@ -634,6 +1041,7 @@ function clearQueue() {
   currentIndex = -1;
   prefetchedRadioSong = null;
   radioPreloadAudio = null;
+  currentTrackScrobbleState = null;
 
   player.pause();
   player.removeAttribute("src");
@@ -644,6 +1052,48 @@ function clearQueue() {
   resetProgressDisplay();
   updatePlayPauseButton();
   setStatus("Queue cleared.");
+}
+
+async function removeQueueIndex(index) {
+  if (index < 0 || index >= queue.length) {
+    return;
+  }
+
+  const isRemovingCurrent = index === currentIndex;
+  queue.splice(index, 1);
+
+  if (queue.length === 0) {
+    currentIndex = -1;
+    currentTrackScrobbleState = null;
+    prefetchedRadioSong = null;
+    radioPreloadAudio = null;
+
+    player.pause();
+    player.removeAttribute("src");
+    player.load();
+
+    renderQueue();
+    updateNowPlaying(null);
+    resetProgressDisplay();
+    updatePlayPauseButton();
+    setStatus("Removed from queue.");
+    return;
+  }
+
+  if (index < currentIndex) {
+    currentIndex -= 1;
+  }
+
+  if (!isRemovingCurrent) {
+    renderQueue();
+    setStatus("Removed from queue.");
+    return;
+  }
+
+  currentTrackScrobbleState = null;
+  const nextIndex = Math.min(index, queue.length - 1);
+  await playQueueIndex(nextIndex);
+  setStatus("Removed from queue.");
 }
 
 async function playQueueIndex(index) {
@@ -665,6 +1115,7 @@ async function playQueueIndex(index) {
   }
 
   currentIndex = index;
+  currentTrackScrobbleState = buildTrackScrobbleState(song, index);
   player.src = streamUrl;
   resetProgressDisplay();
   updateNowPlaying(song);
@@ -672,6 +1123,7 @@ async function playQueueIndex(index) {
 
   try {
     await player.play();
+    submitLastFmNowPlaying(currentTrackScrobbleState);
     setStatus("");
   } catch (error) {
     setStatus("Unable to start playback.");
@@ -859,6 +1311,7 @@ playPauseBtn.addEventListener("click", async () => {
   if (player.paused) {
     try {
       await player.play();
+      submitLastFmNowPlaying(currentTrackScrobbleState);
     } catch (error) {
       setStatus("Unable to resume playback.");
       console.error("Play error", error);
@@ -873,10 +1326,50 @@ playPauseBtn.addEventListener("click", async () => {
 player.addEventListener("play", updatePlayPauseButton);
 player.addEventListener("pause", updatePlayPauseButton);
 player.addEventListener("timeupdate", handlePlayerTimeUpdate);
-player.addEventListener("loadedmetadata", updateProgressDisplay);
+player.addEventListener("loadedmetadata", () => {
+  updateProgressDisplay();
+  submitLastFmNowPlaying(currentTrackScrobbleState);
+});
 player.addEventListener("durationchange", updateProgressDisplay);
 player.addEventListener("ended", () => {
   playNext();
+});
+
+lastFmLoginBtn.addEventListener("click", async () => {
+  try {
+    const loginInit = await initializeLastFmLogin();
+    currentLastFmFlowId = String(loginInit?.flowId || "");
+
+    if (!currentLastFmFlowId || !loginInit?.authorizeUrl) {
+      throw new Error("Missing flow id or authorize URL");
+    }
+
+    window.open(String(loginInit.authorizeUrl), "_blank");
+
+    const shortFlowId = currentLastFmFlowId.slice(0, 8);
+    setLastFmOutcomeMessage(`Waiting for Last.fm authorization in the new tab... (flow ${shortFlowId})`);
+    startLastFmAuthPolling();
+  } catch (error) {
+    setLastFmOutcomeMessage("Failed to start Last.fm login. Check server and keys.", "error");
+    console.error("Last.fm login-init error", error);
+  }
+});
+
+lastFmLogoutBtn.addEventListener("click", async () => {
+  try {
+    await postLastFm("/logout", {});
+    lastFmState.authenticated = false;
+    lastFmState.username = null;
+    currentLastFmFlowId = "";
+    stopLastFmAuthPolling();
+    isLastFmAuthPending = false;
+    setLastFmOutcomeMessage("Disconnected from Last.fm.");
+    updateLastFmUi();
+    setStatus("Last.fm disconnected.");
+  } catch (error) {
+    setStatus("Failed to disconnect Last.fm.");
+    console.error("Last.fm logout error", error);
+  }
 });
 
 progressBar.addEventListener("input", () => {
@@ -896,6 +1389,43 @@ updatePlayPauseButton();
 updateRadioButton();
 resetProgressDisplay();
 initializeMobilePanelToggles();
+
+const authOutcome = new URLSearchParams(window.location.search).get("lastfm");
+const authError = new URLSearchParams(window.location.search).get("lastfm_error");
+if (authOutcome === "connected") {
+  setStatus("Last.fm connected. Scrobbling is now active.");
+  setLastFmOutcomeMessage("Connection successful. Scrobbling is active.", "success");
+}
+if (authOutcome === "failed") {
+  setStatus("Last.fm login failed.");
+  setLastFmOutcomeMessage(authError ? `Login failed: ${authError}` : "Login failed. Please try again.", "error");
+}
+if (authOutcome === "missing_token") {
+  setStatus("Last.fm login did not return a token.");
+  setLastFmOutcomeMessage("Last.fm did not return a token to the callback URL.", "error");
+}
+
+if (authOutcome) {
+  const cleanUrl = new URL(window.location.href);
+  cleanUrl.searchParams.delete("lastfm");
+  cleanUrl.searchParams.delete("lastfm_error");
+  window.history.replaceState({}, "", cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+}
+
+window.addEventListener("focus", () => {
+  refreshLastFmState();
+});
+
+window.addEventListener("message", handleLastFmAuthMessage);
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    refreshLastFmState();
+  }
+});
+
+updateLastFmUi();
+refreshLastFmState();
 loadCategories().finally(() => {
   searchSongs();
 });

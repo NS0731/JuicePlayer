@@ -8,6 +8,19 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <header class="top-bar">
+    <p id="lastFmHint" class="lastfm-hint sr-only" aria-hidden="true"></p>
+    <div class="top-bar-main">
+      <div class="top-bar-left">
+        <h1>JuicePlayer</h1>
+      </div>
+      <div class="top-bar-right" id="lastFmCard">
+        <button id="lastFmLoginBtn" class="topbar-btn" type="button">Connect Last.fm</button>
+        <button id="lastFmLogoutBtn" class="topbar-btn" type="button">Disconnect</button>
+      </div>
+    </div>
+  </header>
+
   <div class="layout">
     <section class="panel" id="searchPanel">
       <div class="panel-header">
