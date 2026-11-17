@@ -1,9 +1,11 @@
 const API_BASE = "/api/juicewrld";
+const API_ORIGIN = "https://juicewrldapi.com";
 const LASTFM_API_BASE = "/auth/lastfm";
 const BLOCKED_CATEGORIES = new Set(["unsurfaced", "recording_session"]);
 
 const searchInput = document.getElementById("searchInput");
 const categoryButtonsEl = document.getElementById("categoryButtons");
+const categoryFilterEl = document.getElementById("categoryFilter");
 const searchBtn = document.getElementById("searchBtn");
 const loadMoreBtn = document.getElementById("loadMoreBtn");
 const loadingEl = document.getElementById("loading");
@@ -12,12 +14,12 @@ const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
 const queueEl = document.getElementById("queue");
 const nowPlayingEl = document.getElementById("nowPlaying");
+const nowPlayingArtistEl = document.getElementById("nowPlayingArtist");
+const nowPlayingArtEl = document.getElementById("nowPlayingArt");
 const progressBar = document.getElementById("progressBar");
 const currentTimeEl = document.getElementById("currentTime");
 const durationEl = document.getElementById("duration");
-const searchPanel = document.getElementById("searchPanel");
 const queuePanel = document.getElementById("queuePanel");
-const searchPanelToggle = document.getElementById("searchPanelToggle");
 const queuePanelToggle = document.getElementById("queuePanelToggle");
 const lastFmHint = document.getElementById("lastFmHint");
 const lastFmAuthMessage = document.getElementById("lastFmAuthMessage");
@@ -28,11 +30,14 @@ const prevBtn = document.getElementById("prevBtn");
 const playPauseBtn = document.getElementById("playPauseBtn");
 const nextBtn = document.getElementById("nextBtn");
 const radioBtn = document.getElementById("radioBtn");
+const queueBtn = document.getElementById("queueBtn");
 const clearQueueBtn = document.getElementById("clearQueueBtn");
 const player = document.getElementById("player");
 
 const PAGE_SIZE = 20;
 const RADIO_PREFETCH_REMAINING_SECONDS = 20;
+const SONG_CACHE_TTL_MS = 2 * 60 * 1000;
+const MAX_SONG_CACHE_ENTRIES = 30;
 
 let queue = [];
 let currentIndex = -1;
@@ -42,6 +47,7 @@ let hasMoreResults = false;
 let isRadioMode = false;
 let isFetchingRadioSong = false;
 let isPrefetchingRadioSong = false;
+let radioFetchPromise = null;
 let prefetchedRadioSong = null;
 let radioPreloadAudio = null;
 let statusHideTimer = null;
@@ -59,6 +65,14 @@ let lastFmStatusError = "";
 let isLastFmAuthPending = false;
 let currentLastFmFlowId = "";
 let lastFmStatusLoaded = false;
+let lastFmStatusRequest = null;
+let lastFmStatusUpdatedAt = 0;
+let activeSearchController = null;
+let currentSearchRequestId = 0;
+let isLoadingMore = false;
+const songPageCache = new Map();
+const inFlightSongRequests = new Map();
+let categoriesCache = null;
 
 function setLastFmOutcomeMessage(message, type = "") {
   lastFmOutcomeMessage = String(message || "");
@@ -136,13 +150,10 @@ function startLastFmAuthPolling() {
 
     if (currentLastFmFlowId) {
       const flowStatus = await fetchLastFmFlowStatus(currentLastFmFlowId);
-      const fallbackFlowStatus = flowStatus?.status === "pending"
-        ? await fetchLastFmFlowStatus("")
-        : flowStatus;
-      const effectiveFlowStatus = fallbackFlowStatus || flowStatus;
+      const effectiveFlowStatus = flowStatus;
 
       if (effectiveFlowStatus?.status === "connected") {
-        await refreshLastFmState();
+        await refreshLastFmState(true);
         if (lastFmState.authenticated) {
           stopLastFmAuthPolling();
           isLastFmAuthPending = false;
@@ -171,7 +182,7 @@ function startLastFmAuthPolling() {
       }
     }
 
-    const refreshed = await refreshLastFmState();
+    const refreshed = currentLastFmFlowId ? true : await refreshLastFmState();
 
     if (!refreshed) {
       if (lastFmAuthPollAttempts >= 8) {
@@ -313,39 +324,55 @@ function updateLastFmUi() {
   }
 }
 
-async function refreshLastFmState() {
-  try {
-    const response = await fetch(`${LASTFM_API_BASE}/status?t=${Date.now()}`, {
-      cache: "no-store",
-      credentials: "same-origin"
-    });
-    if (!response.ok) {
-      throw new Error(`Last.fm status request failed with status ${response.status}`);
-    }
-
-    const data = await response.json();
-    lastFmStatusLoaded = true;
-    lastFmStatusError = "";
-    lastFmState = {
-      enabled: Boolean(data?.enabled),
-      authenticated: Boolean(data?.authenticated),
-      username: data?.username || null
-    };
-
-    updateLastFmUi();
-    return true;
-  } catch (error) {
-    console.error("Last.fm status error", error);
-    lastFmStatusLoaded = true;
-    lastFmStatusError = String(error?.message || "status_request_failed");
-    lastFmState = {
-      enabled: false,
-      authenticated: false,
-      username: null
-    };
-    updateLastFmUi();
-    return false;
+async function refreshLastFmState(force = false) {
+  const now = Date.now();
+  if (lastFmStatusRequest) {
+    return lastFmStatusRequest;
   }
+
+  if (!force && lastFmStatusLoaded && now - lastFmStatusUpdatedAt < 5000) {
+    return true;
+  }
+
+  lastFmStatusRequest = (async () => {
+    try {
+      const response = await fetch(`${LASTFM_API_BASE}/status?t=${Date.now()}`, {
+        cache: "no-store",
+        credentials: "same-origin"
+      });
+      if (!response.ok) {
+        throw new Error(`Last.fm status request failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+      lastFmStatusLoaded = true;
+      lastFmStatusUpdatedAt = Date.now();
+      lastFmStatusError = "";
+      lastFmState = {
+        enabled: Boolean(data?.enabled),
+        authenticated: Boolean(data?.authenticated),
+        username: data?.username || null
+      };
+
+      updateLastFmUi();
+      return true;
+    } catch (error) {
+      console.error("Last.fm status error", error);
+      lastFmStatusLoaded = true;
+      lastFmStatusError = String(error?.message || "status_request_failed");
+      lastFmState = {
+        enabled: false,
+        authenticated: false,
+        username: null
+      };
+      updateLastFmUi();
+      return false;
+    } finally {
+      lastFmStatusRequest = null;
+    }
+  })();
+
+  return lastFmStatusRequest;
 }
 
 async function postLastFm(path, payload) {
@@ -455,38 +482,13 @@ function setStatus(message) {
   }
 }
 
-function setPanelCollapsed(panel, toggleBtn, collapsed) {
-  panel.classList.toggle("collapsed", collapsed);
-  toggleBtn.textContent = collapsed ? "Show" : "Hide";
-  toggleBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
-}
-
-function initializeMobilePanelToggles() {
-  const mobileQuery = window.matchMedia("(max-width: 900px)");
-
-  searchPanelToggle.addEventListener("click", () => {
-    const collapsed = !searchPanel.classList.contains("collapsed");
-    setPanelCollapsed(searchPanel, searchPanelToggle, collapsed);
-  });
-
-  queuePanelToggle.addEventListener("click", () => {
-    const collapsed = !queuePanel.classList.contains("collapsed");
-    setPanelCollapsed(queuePanel, queuePanelToggle, collapsed);
-  });
-
-  const syncForViewport = () => {
-    if (mobileQuery.matches) {
-      setPanelCollapsed(searchPanel, searchPanelToggle, false);
-      setPanelCollapsed(queuePanel, queuePanelToggle, true);
-      return;
-    }
-
-    setPanelCollapsed(searchPanel, searchPanelToggle, false);
-    setPanelCollapsed(queuePanel, queuePanelToggle, false);
-  };
-
-  syncForViewport();
-  mobileQuery.addEventListener("change", syncForViewport);
+function setQueueDrawerOpen(open) {
+  queuePanel.classList.toggle("open", open);
+  queuePanel.setAttribute("aria-hidden", open ? "false" : "true");
+  queuePanelToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  queuePanelToggle.textContent = open ? "Close" : "Queue";
+  queueBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  queueBtn.classList.toggle("active", open);
 }
 
 function updateRadioButton() {
@@ -604,13 +606,23 @@ function updateMediaSession(song) {
     return;
   }
 
-  navigator.mediaSession.metadata = new MediaMetadata({
+  const artworkUrl = songArtworkUrl(song);
+  const metadata = {
     title: songDisplayName(song),
     artist: songArtist(song),
     album: songCategory(song)
-  });
+  };
 
-  navigator.mediaSession.setActionHandler("play", async () => {
+  if (artworkUrl) {
+    metadata.artwork = [
+      { src: artworkUrl, sizes: "512x512", type: "image/webp" },
+      { src: artworkUrl, sizes: "256x256", type: "image/webp" }
+    ];
+  }
+
+  navigator.mediaSession.metadata = new MediaMetadata(metadata);
+
+  setMediaSessionAction("play", async () => {
     try {
       if (!player.src && queue.length > 0 && currentIndex === -1) {
         await playQueueIndex(0);
@@ -623,17 +635,84 @@ function updateMediaSession(song) {
     }
   });
 
-  navigator.mediaSession.setActionHandler("pause", () => {
+  setMediaSessionAction("pause", () => {
     player.pause();
   });
 
-  navigator.mediaSession.setActionHandler("previoustrack", () => {
+  setMediaSessionAction("previoustrack", () => {
     playPrevious();
   });
 
-  navigator.mediaSession.setActionHandler("nexttrack", () => {
+  setMediaSessionAction("nexttrack", () => {
     playNext();
   });
+
+  setMediaSessionAction("seekbackward", (details) => {
+    player.currentTime = Math.max(0, player.currentTime - (details.seekOffset || 10));
+    updateMediaSessionPositionState();
+  });
+
+  setMediaSessionAction("seekforward", (details) => {
+    player.currentTime = Math.min(player.duration || player.currentTime, player.currentTime + (details.seekOffset || 10));
+    updateMediaSessionPositionState();
+  });
+
+  setMediaSessionAction("seekto", (details) => {
+    if (!Number.isFinite(details.seekTime)) {
+      return;
+    }
+
+    if (details.fastSeek && typeof player.fastSeek === "function") {
+      player.fastSeek(details.seekTime);
+    } else {
+      player.currentTime = details.seekTime;
+    }
+    updateMediaSessionPositionState();
+  });
+}
+
+function setMediaSessionAction(action, handler) {
+  try {
+    navigator.mediaSession.setActionHandler(action, handler);
+  } catch (error) {
+    console.debug(`Media session action is not supported: ${action}`);
+  }
+}
+
+function songArtworkUrl(song) {
+  const imagePath = song?.image_url || song?.imageUrl || song?.artwork_url || song?.artworkUrl;
+  if (typeof imagePath !== "string" || !imagePath.trim()) {
+    return "";
+  }
+
+  const trimmedPath = imagePath.trim();
+  if (/^https?:\/\//i.test(trimmedPath)) {
+    return trimmedPath;
+  }
+
+  return `${API_ORIGIN}${trimmedPath.startsWith("/") ? "" : "/"}${trimmedPath}`;
+}
+
+function updateMediaSessionPositionState() {
+  if (!("mediaSession" in navigator) || typeof navigator.mediaSession.setPositionState !== "function") {
+    return;
+  }
+
+  const duration = Number.isFinite(player.duration) ? player.duration : 0;
+  const position = Number.isFinite(player.currentTime) ? player.currentTime : 0;
+  if (duration <= 0 || position < 0 || position > duration) {
+    return;
+  }
+
+  try {
+    navigator.mediaSession.setPositionState({
+      duration,
+      playbackRate: Number.isFinite(player.playbackRate) && player.playbackRate > 0 ? player.playbackRate : 1,
+      position
+    });
+  } catch (error) {
+    console.debug("Media session position state unavailable", error);
+  }
 }
 
 function getSongIdentity(song) {
@@ -654,66 +733,65 @@ function queueContainsSong(song) {
   return queue.some((queuedSong) => getSongIdentity(queuedSong) === targetIdentity);
 }
 
-function radioSearchTerm() {
-  const currentSong = queue[currentIndex];
-  const source = songDisplayName(currentSong || null);
-  const words = source
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 3);
-
-  if (words.length > 0) {
-    return words.join(" ");
-  }
-
-  return searchInput.value.trim();
-}
-
 function radioCategory() {
   if (selectedCategory && !BLOCKED_CATEGORIES.has(selectedCategory)) {
     return selectedCategory;
   }
-
-  const currentSongCategory = queue[currentIndex]?.category;
-  if (currentSongCategory && !BLOCKED_CATEGORIES.has(currentSongCategory)) {
-    return currentSongCategory;
-  }
-
   return "";
 }
 
-async function fetchRadioSong() {
-  const searchTerm = radioSearchTerm();
+async function fetchRadioPage(params) {
+  const response = await fetch(`${API_BASE}/songs/?${params.toString()}`);
+  if (!response.ok) {
+    throw new Error(`Radio request failed with status ${response.status}`);
+  }
+
+  return response.json();
+}
+
+function playableRadioSongs(songs) {
+  return songs.filter(
+    (song) => !isBlockedSong(song) && Boolean(getSongFilePath(song)) && !queueContainsSong(song)
+  );
+}
+
+async function fetchRadioSongInternal() {
   const category = radioCategory();
+  const strategies = category ? [{ category }, {}] : [{}];
 
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const params = new URLSearchParams({
-      page: String(Math.floor(Math.random() * 120) + 1),
-      page_size: String(PAGE_SIZE)
-    });
-
-    if (category) {
-      params.set("category", category);
-    }
-
-    if (searchTerm && attempt < 3) {
-      params.set("search", searchTerm);
+  for (const strategy of strategies) {
+    const baseParams = new URLSearchParams({ page: "1", page_size: "1" });
+    if (strategy.category) {
+      baseParams.set("category", strategy.category);
     }
 
     try {
-      const response = await fetch(`${API_BASE}/songs/?${params.toString()}`);
-      if (!response.ok) {
-        continue;
-      }
+      const overview = await fetchRadioPage(baseParams);
+      const count = Number(overview?.count) || 0;
+      const pageCount = Math.max(1, Math.ceil(count / PAGE_SIZE));
+      const triedPages = new Set();
 
-      const data = await response.json();
-      const songs = Array.isArray(data?.results) ? data.results : [];
-      const candidate = songs.find(
-        (song) => !isBlockedSong(song) && Boolean(getSongFilePath(song)) && !queueContainsSong(song)
-      );
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const page = Math.floor(Math.random() * pageCount) + 1;
+        if (triedPages.has(page)) {
+          continue;
+        }
+        triedPages.add(page);
 
-      if (candidate) {
-        return candidate;
+        const params = new URLSearchParams({
+          page: String(page),
+          page_size: String(PAGE_SIZE)
+        });
+        if (strategy.category) {
+          params.set("category", strategy.category);
+        }
+
+        const data = await fetchRadioPage(params);
+        const songs = Array.isArray(data?.results) ? data.results : [];
+        const candidates = playableRadioSongs(songs);
+        if (candidates.length > 0) {
+          return candidates[Math.floor(Math.random() * candidates.length)];
+        }
       }
     } catch (error) {
       console.error("Radio fetch error", error);
@@ -721,6 +799,18 @@ async function fetchRadioSong() {
   }
 
   return null;
+}
+
+async function fetchRadioSong() {
+  if (radioFetchPromise) {
+    return radioFetchPromise;
+  }
+
+  radioFetchPromise = fetchRadioSongInternal().finally(() => {
+    radioFetchPromise = null;
+  });
+
+  return radioFetchPromise;
 }
 
 async function continueWithRadio() {
@@ -789,6 +879,11 @@ function preloadRadioAudio(song) {
     return;
   }
 
+  const connection = navigator.connection;
+  if (connection?.saveData || connection?.effectiveType === "slow-2g" || connection?.effectiveType === "2g") {
+    return;
+  }
+
   radioPreloadAudio = new Audio();
   radioPreloadAudio.preload = "auto";
   radioPreloadAudio.src = streamUrl;
@@ -812,6 +907,10 @@ async function prefetchNextRadioSongIfNeeded(force = false) {
       return;
     }
 
+    if (queueContainsSong(song)) {
+      return;
+    }
+
     prefetchedRadioSong = song;
     preloadRadioAudio(song);
   } finally {
@@ -828,6 +927,7 @@ function renderResults(songs, append = false) {
     resultsEl.innerHTML = "";
   }
 
+  const fragment = document.createDocumentFragment();
   songs.forEach((song) => {
     const blocked = isBlockedSong(song);
 
@@ -837,11 +937,14 @@ function renderResults(songs, append = false) {
     const header = document.createElement("div");
     header.className = "item-header";
 
+    const info = document.createElement("div");
+    info.className = "item-info";
+
     const title = document.createElement("div");
     title.className = "item-title";
     title.textContent = songDisplayName(song);
 
-    header.appendChild(title);
+    info.appendChild(title);
 
     if (!blocked) {
       const actions = document.createElement("div");
@@ -857,13 +960,24 @@ function renderResults(songs, append = false) {
         setStatus("Added to queue and playing now.");
       });
 
+      const more = document.createElement("details");
+      more.className = "item-more";
+
+      const moreSummary = document.createElement("summary");
+      moreSummary.textContent = "More";
+      moreSummary.addEventListener("click", (event) => event.stopPropagation());
+
+      const moreMenu = document.createElement("div");
+      moreMenu.className = "item-more-menu";
+
       const addQueueBtn = document.createElement("button");
       addQueueBtn.type = "button";
-      addQueueBtn.textContent = "+ Queue";
+      addQueueBtn.textContent = "Add to queue";
       addQueueBtn.disabled = !getSongFilePath(song);
       addQueueBtn.addEventListener("click", (event) => {
         event.stopPropagation();
         addToQueueOnly(song);
+        more.open = false;
         setStatus("Added to queue.");
       });
 
@@ -873,12 +987,17 @@ function renderResults(songs, append = false) {
       downloadBtn.disabled = !getSongFilePath(song);
       downloadBtn.addEventListener("click", (event) => {
         event.stopPropagation();
+        more.open = false;
         downloadSong(song);
       });
 
+      moreMenu.appendChild(addQueueBtn);
+      moreMenu.appendChild(downloadBtn);
+      more.appendChild(moreSummary);
+      more.appendChild(moreMenu);
+
       actions.appendChild(playBtn);
-      actions.appendChild(addQueueBtn);
-      actions.appendChild(downloadBtn);
+      actions.appendChild(more);
       header.appendChild(actions);
     }
 
@@ -886,8 +1005,9 @@ function renderResults(songs, append = false) {
     meta.className = "meta";
     meta.textContent = `${song?.category || "unknown"} • ${songArtist(song)}${blocked ? " • Not playable" : ""}`;
 
+    info.appendChild(meta);
+    header.prepend(info);
     item.appendChild(header);
-    item.appendChild(meta);
 
     item.addEventListener("click", () => {
       if (blocked) {
@@ -899,19 +1019,25 @@ function renderResults(songs, append = false) {
       setStatus("Added to queue.");
     });
 
-    resultsEl.appendChild(item);
+    fragment.appendChild(item);
   });
+
+  resultsEl.appendChild(fragment);
 }
 
 function renderQueue() {
   queueEl.innerHTML = "";
 
+  const fragment = document.createDocumentFragment();
   queue.forEach((song, index) => {
     const item = document.createElement("div");
     item.className = `item${index === currentIndex ? " active" : ""}`;
 
     const header = document.createElement("div");
     header.className = "item-header";
+
+    const info = document.createElement("div");
+    info.className = "item-info";
 
     const title = document.createElement("div");
     title.className = "item-title";
@@ -931,27 +1057,33 @@ function renderQueue() {
     });
 
     actions.appendChild(removeBtn);
-    header.appendChild(title);
+    info.appendChild(title);
     header.appendChild(actions);
 
     const meta = document.createElement("div");
     meta.className = "meta";
     meta.textContent = `${song?.category || "unknown"} • ${songArtist(song)}`;
 
+    info.appendChild(meta);
+    header.prepend(info);
     item.appendChild(header);
-    item.appendChild(meta);
 
     item.addEventListener("click", () => {
       playQueueIndex(index);
     });
 
-    queueEl.appendChild(item);
+    fragment.appendChild(item);
   });
+
+  queueEl.appendChild(fragment);
 }
 
 function updateNowPlaying(song) {
   if (!song) {
-    nowPlayingEl.textContent = "Now Playing: Nothing";
+    nowPlayingEl.textContent = "Nothing playing";
+    nowPlayingArtistEl.textContent = "";
+    nowPlayingArtEl.hidden = true;
+    nowPlayingArtEl.removeAttribute("src");
     document.title = "JuicePlayer";
     updateMediaSession(null);
     return;
@@ -960,7 +1092,17 @@ function updateNowPlaying(song) {
   const title = songDisplayName(song);
   const artist = songArtist(song);
   const category = songCategory(song);
-  nowPlayingEl.textContent = `Now Playing: ${title} - ${artist} (${category})`;
+  nowPlayingEl.textContent = title;
+  nowPlayingArtistEl.textContent = `${artist} · ${category}`;
+  const artworkUrl = songArtworkUrl(song);
+  if (artworkUrl) {
+    nowPlayingArtEl.src = artworkUrl;
+    nowPlayingArtEl.alt = `${title} artwork`;
+    nowPlayingArtEl.hidden = false;
+  } else {
+    nowPlayingArtEl.hidden = true;
+    nowPlayingArtEl.removeAttribute("src");
+  }
   document.title = `${title} - ${artist} | JuicePlayer`;
   updateMediaSession(song);
 }
@@ -988,6 +1130,131 @@ function formatTime(totalSeconds) {
   return `${minutesPart}:${String(secondsPart).padStart(2, "0")}`;
 }
 
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[&+]/g, " and ")
+    .replace(/[’'`]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function songSearchText(song) {
+  const fields = [
+    song?.name,
+    song?.original_key,
+    song?.track_titles,
+    song?.file_names
+  ];
+
+  return normalizeSearchText(fields.flat().join(" "));
+}
+
+function matchesNormalizedSearch(song, query) {
+  const normalizedQuery = normalizeSearchText(query);
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  const songText = songSearchText(song);
+  return normalizedQuery.split(" ").every((term) => songText.includes(term));
+}
+
+async function fetchSongSearchPage(params, signal) {
+  const cacheKey = params.toString();
+  const cached = songPageCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < SONG_CACHE_TTL_MS) {
+    songPageCache.delete(cacheKey);
+    songPageCache.set(cacheKey, cached);
+    return cached.songs;
+  }
+
+  if (cached) {
+    songPageCache.delete(cacheKey);
+  }
+
+  const activeRequest = inFlightSongRequests.get(cacheKey);
+  if (activeRequest && !activeRequest.signal?.aborted) {
+    return activeRequest.promise;
+  }
+  if (activeRequest) {
+    inFlightSongRequests.delete(cacheKey);
+  }
+
+  const request = (async () => {
+    const response = await fetch(`${API_BASE}/songs/?${cacheKey}`, { signal });
+    if (!response.ok) {
+      throw new Error(`Songs request failed with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    const songs = Array.isArray(data?.results) ? data.results : [];
+    songPageCache.set(cacheKey, { createdAt: Date.now(), songs });
+
+    while (songPageCache.size > MAX_SONG_CACHE_ENTRIES) {
+      songPageCache.delete(songPageCache.keys().next().value);
+    }
+
+    return songs;
+  })();
+
+  const requestRecord = { promise: request, signal };
+  inFlightSongRequests.set(cacheKey, requestRecord);
+  try {
+    return await request;
+  } finally {
+    if (inFlightSongRequests.get(cacheKey) === requestRecord) {
+      inFlightSongRequests.delete(cacheKey);
+    }
+  }
+}
+
+async function fetchPunctuationFallback(query, baseParams, signal) {
+  const normalizedQuery = normalizeSearchText(query);
+  const terms = normalizedQuery
+    .split(" ")
+    .filter((term) => term.length >= 3)
+    .sort((left, right) => right.length - left.length)
+    .slice(0, 2);
+
+  if (terms.length === 0) {
+    return [];
+  }
+
+  const candidates = [];
+  const seen = new Set();
+
+  for (const term of terms) {
+    const fallbackParams = new URLSearchParams(baseParams);
+    fallbackParams.set("search", term);
+    fallbackParams.set("page", "1");
+    fallbackParams.set("page_size", "100");
+
+    try {
+      const songs = await fetchSongSearchPage(fallbackParams, signal);
+      songs.forEach((song) => {
+        const identity = getSongIdentity(song);
+        if (!seen.has(identity)) {
+          seen.add(identity);
+          candidates.push(song);
+        }
+      });
+    } catch (error) {
+      console.debug("Search fallback request failed", error);
+    }
+
+    const matches = candidates.filter((song) => matchesNormalizedSearch(song, query));
+    if (matches.length > 0) {
+      return matches;
+    }
+  }
+
+  return candidates.filter((song) => matchesNormalizedSearch(song, query));
+}
+
 function updateProgressDisplay() {
   const duration = Number.isFinite(player.duration) ? player.duration : 0;
   const currentTime = Number.isFinite(player.currentTime) ? player.currentTime : 0;
@@ -1001,6 +1268,8 @@ function updateProgressDisplay() {
   } else {
     progressBar.value = "0";
   }
+
+  updateMediaSessionPositionState();
 }
 
 function handlePlayerTimeUpdate() {
@@ -1152,6 +1421,14 @@ function playPrevious() {
 }
 
 async function searchSongs() {
+  if (activeSearchController) {
+    activeSearchController.abort();
+  }
+
+  const controller = new AbortController();
+  activeSearchController = controller;
+  const requestId = currentSearchRequestId + 1;
+  currentSearchRequestId = requestId;
   currentPage = 1;
 
   setLoading(true);
@@ -1160,10 +1437,10 @@ async function searchSongs() {
   setLoadMoreVisible(false);
   resultsEl.innerHTML = "";
 
-  await fetchSongsPage(currentPage, false);
+  await fetchSongsPage(currentPage, false, controller.signal, requestId);
 }
 
-async function fetchSongsPage(page, append) {
+async function fetchSongsPage(page, append, signal, requestId = currentSearchRequestId) {
   const query = searchInput.value.trim();
 
   const params = new URLSearchParams({
@@ -1180,15 +1457,23 @@ async function fetchSongsPage(page, append) {
   }
 
   try {
-    const response = await fetch(`${API_BASE}/songs/?${params.toString()}`);
-    if (!response.ok) {
-      throw new Error(`Songs request failed with status ${response.status}`);
+    let songs = await fetchSongSearchPage(params, signal);
+    let usedSearchFallback = false;
+
+    if (query && !append && songs.length === 0) {
+      const fallbackSongs = await fetchPunctuationFallback(query, params, signal);
+      if (fallbackSongs.length > 0) {
+        songs = fallbackSongs;
+        usedSearchFallback = true;
+        setStatus("Showing close matches for your search.");
+      }
     }
 
-    const data = await response.json();
-    const songs = Array.isArray(data?.results) ? data.results : [];
+    if (requestId !== currentSearchRequestId || signal?.aborted) {
+      return;
+    }
 
-    hasMoreResults = songs.length === PAGE_SIZE;
+    hasMoreResults = !usedSearchFallback && songs.length === PAGE_SIZE;
     setLoadMoreVisible(hasMoreResults);
 
     if (!append && songs.length === 0) {
@@ -1198,43 +1483,55 @@ async function fetchSongsPage(page, append) {
 
     renderResults(songs, append);
   } catch (error) {
+    if (error?.name === "AbortError" || signal?.aborted || requestId !== currentSearchRequestId) {
+      return;
+    }
+
     setStatus(append ? "Failed to load more songs." : "Failed to fetch songs.");
     if (!append) {
       setEmpty(true);
     }
     console.error("Search error", error);
   } finally {
-    setLoading(false);
+    if (requestId === currentSearchRequestId && !signal?.aborted) {
+      setLoading(false);
+    }
   }
 }
 
 async function loadCategories() {
   categoryButtonsEl.innerHTML = "";
 
-  const createCategoryButton = (value, label) => {
+  const appendCategoryOption = (value, label) => {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "category-btn";
+    button.className = "category-option";
     button.dataset.value = value;
     button.textContent = label;
-
-    if (value === selectedCategory) {
-      button.classList.add("active");
-    }
-
+    button.setAttribute("role", "menuitemradio");
+    button.setAttribute("aria-checked", value === selectedCategory ? "true" : "false");
+    button.classList.toggle("active", value === selectedCategory);
     button.addEventListener("click", () => {
       selectedCategory = value;
-      const buttons = categoryButtonsEl.querySelectorAll(".category-btn");
-      buttons.forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.value === selectedCategory);
+      categoryButtonsEl.querySelectorAll(".category-option").forEach((option) => {
+        const isActive = option.dataset.value === selectedCategory;
+        option.classList.toggle("active", isActive);
+        option.setAttribute("aria-checked", isActive ? "true" : "false");
       });
+      categoryFilterEl.open = false;
       searchSongs();
     });
-
-    return button;
+    categoryButtonsEl.appendChild(button);
   };
 
-  categoryButtonsEl.appendChild(createCategoryButton("", "All Categories"));
+  appendCategoryOption("", "All Categories");
+
+  if (categoriesCache) {
+    categoriesCache.forEach((category) => {
+      appendCategoryOption(category.value, category.label);
+    });
+    return;
+  }
 
   try {
     const response = await fetch(`${API_BASE}/categories/`);
@@ -1244,13 +1541,10 @@ async function loadCategories() {
 
     const data = await response.json();
     const categories = Array.isArray(data?.categories) ? data.categories : [];
+    categoriesCache = categories.filter((category) => category?.value && category?.label);
 
-    categories.forEach((category) => {
-      if (!category?.value || !category?.label) {
-        return;
-      }
-
-      categoryButtonsEl.appendChild(createCategoryButton(category.value, category.label));
+    categoriesCache.forEach((category) => {
+      appendCategoryOption(category.value, category.label);
     });
   } catch (error) {
     setStatus("Failed to fetch categories.");
@@ -1260,13 +1554,20 @@ async function loadCategories() {
 
 searchBtn.addEventListener("click", searchSongs);
 loadMoreBtn.addEventListener("click", async () => {
-  if (!hasMoreResults) {
+  if (!hasMoreResults || isLoadingMore || !activeSearchController) {
     return;
   }
 
+  isLoadingMore = true;
+  loadMoreBtn.disabled = true;
   currentPage += 1;
   setLoading(true);
-  await fetchSongsPage(currentPage, true);
+  try {
+    await fetchSongsPage(currentPage, true, activeSearchController.signal, currentSearchRequestId);
+  } finally {
+    isLoadingMore = false;
+    loadMoreBtn.disabled = false;
+  }
 });
 
 searchInput.addEventListener("keydown", (event) => {
@@ -1300,6 +1601,12 @@ radioBtn.addEventListener("click", async () => {
   }
 
   await continueWithRadio();
+});
+queueBtn.addEventListener("click", () => {
+  setQueueDrawerOpen(!queuePanel.classList.contains("open"));
+});
+queuePanelToggle.addEventListener("click", () => {
+  setQueueDrawerOpen(false);
 });
 
 playPauseBtn.addEventListener("click", async () => {
@@ -1388,8 +1695,6 @@ updateNowPlaying(null);
 updatePlayPauseButton();
 updateRadioButton();
 resetProgressDisplay();
-initializeMobilePanelToggles();
-
 const authOutcome = new URLSearchParams(window.location.search).get("lastfm");
 const authError = new URLSearchParams(window.location.search).get("lastfm_error");
 if (authOutcome === "connected") {

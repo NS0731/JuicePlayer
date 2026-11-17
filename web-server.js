@@ -726,15 +726,29 @@ function serveStatic(req, res) {
 function proxyApi(req, res) {
   const incomingUrl = new URL(req.url, `http://localhost:${PORT}`);
   const targetPath = incomingUrl.pathname.replace(API_PREFIX, "/juicewrld") + incomingUrl.search;
+  const forwardedHeaders = {
+    Accept: req.headers.accept || "*/*",
+    "User-Agent": "JuicePlayer-WebApp"
+  };
+
+  [
+    "range",
+    "if-range",
+    "if-none-match",
+    "if-modified-since",
+    "accept-encoding"
+  ].forEach((headerName) => {
+    const headerValue = req.headers[headerName];
+    if (headerValue) {
+      forwardedHeaders[headerName] = headerValue;
+    }
+  });
 
   const proxyRequest = https.request(
     `${API_TARGET_ORIGIN}${targetPath}`,
     {
       method: req.method,
-      headers: {
-        Accept: req.headers.accept || "*/*",
-        "User-Agent": "JuicePlayer-WebApp"
-      }
+      headers: forwardedHeaders
     },
     (proxyResponse) => {
       const headers = {

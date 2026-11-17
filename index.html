@@ -12,7 +12,12 @@
     <p id="lastFmHint" class="lastfm-hint sr-only" aria-hidden="true"></p>
     <div class="top-bar-main">
       <div class="top-bar-left">
-        <h1>JuicePlayer</h1>
+        <div class="brand-lockup">
+          <div>
+            <h1>JuicePlayer</h1>
+            <p>web player for juicewrldapi.com</p>
+          </div>
+        </div>
       </div>
       <div class="top-bar-right" id="lastFmCard">
         <button id="lastFmLoginBtn" class="topbar-btn" type="button">Connect Last.fm</button>
@@ -25,53 +30,81 @@
     <section class="panel" id="searchPanel">
       <div class="panel-header">
         <h2>Search</h2>
-        <button id="searchPanelToggle" class="panel-toggle" type="button" aria-expanded="true">Hide</button>
       </div>
       <div class="panel-content">
       <div class="search-row">
         <input id="searchInput" type="text" placeholder="Search songs" />
+        <button id="searchBtn" type="button" aria-label="Search" title="Search">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="10.8" cy="10.8" r="6.4"></circle>
+            <path d="m16 16 4.5 4.5"></path>
+          </svg>
+        </button>
+        <details id="categoryFilter" class="filter-menu">
+          <summary aria-label="Filter by category" title="Filter by category">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M4 6h16M7 12h10M10 18h4"></path>
+            </svg>
+          </summary>
+          <div id="categoryButtons" class="category-menu" role="menu" aria-label="Song categories"></div>
+        </details>
       </div>
-      <div class="search-row">
-        <button id="searchBtn" type="button">Search</button>
-      </div>
-      <div id="categoryButtons" class="category-buttons"></div>
       <div id="loading">Loading songs...</div>
       <div id="empty">No results found.</div>
-      <div id="status"></div>
       <div id="results" class="list"></div>
       <button id="loadMoreBtn" type="button">Load More</button>
-      </div>
-    </section>
-
-    <section class="panel" id="queuePanel">
-      <div class="panel-header">
-        <h2>Queue</h2>
-        <button id="queuePanelToggle" class="panel-toggle" type="button" aria-expanded="true">Hide</button>
-      </div>
-      <div class="panel-content">
-      <div class="search-row">
-        <button id="clearQueueBtn" type="button">Clear Queue</button>
-      </div>
-      <div id="queue" class="list"></div>
+      <div id="status"></div>
       </div>
     </section>
   </div>
 
+  <aside class="queue-drawer" id="queuePanel" aria-label="Playback queue" aria-hidden="true">
+    <div class="panel-header">
+      <div>
+        <p class="eyebrow">Up next</p>
+        <h2>Queue</h2>
+      </div>
+      <button id="queuePanelToggle" class="panel-toggle" type="button" aria-expanded="false">Close</button>
+    </div>
+    <div class="queue-drawer-content">
+      <div class="search-row">
+        <button id="clearQueueBtn" type="button">Clear Queue</button>
+      </div>
+      <div id="queue" class="list"></div>
+    </div>
+  </aside>
+
   <div class="player-bar">
-    <div class="controls">
+    <div class="now-playing">
+      <img id="nowPlayingArt" class="now-playing-art" alt="" hidden />
+      <div class="now-playing-copy">
+        <div id="nowPlaying" class="now-playing-title">Nothing playing</div>
+        <div id="nowPlayingArtist" class="now-playing-artist"></div>
+      </div>
+    </div>
+    <div class="player-center">
+      <div class="controls">
       <div class="transport-controls">
         <button id="prevBtn" type="button" aria-label="Previous" title="Previous">⏮</button>
         <button id="playPauseBtn" type="button" aria-label="Play" title="Play"></button>
         <button id="nextBtn" type="button" aria-label="Next" title="Next">⏭</button>
       </div>
+      </div>
+      <div class="progress-wrap">
+        <span id="currentTime" class="time">0:00</span>
+        <input id="progressBar" type="range" min="0" max="100" value="0" step="0.1" />
+        <span id="duration" class="time">0:00</span>
+      </div>
+    </div>
+    <div class="player-actions">
       <button id="radioBtn" type="button">Radio Off</button>
+      <button id="queueBtn" type="button" aria-label="Open queue" title="Open queue" aria-expanded="false" aria-controls="queuePanel">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M5 6h14M5 12h14M5 18h9"></path>
+          <path d="M17 16v5m-2.5-2.5H19.5"></path>
+        </svg>
+      </button>
     </div>
-    <div class="progress-wrap">
-      <span id="currentTime" class="time">0:00</span>
-      <input id="progressBar" type="range" min="0" max="100" value="0" step="0.1" />
-      <span id="duration" class="time">0:00</span>
-    </div>
-    <div id="nowPlaying">Now Playing: Nothing</div>
     <audio id="player"></audio>
   </div>
 
